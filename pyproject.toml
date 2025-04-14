@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "dm"
+version = "0.1.0"
+description = ""
+authors = ["tasotaku_desktop <tasogareatakusann@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+chromedriver-autoinstaller = "^0.6.4"
+selenium = "^4.31.0"
+bs4 = "^0.0.2"
+requests = "^2.32.3"
+pandas = "^2.2.3"
+faiss-cpu = "^1.10.0"
+openai = "^1.73.0"
+matplotlib = "^3.10.1"
+
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
