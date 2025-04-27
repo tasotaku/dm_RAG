@@ -2,3 +2,4 @@ __pycache__/
 
 answers/*
 card_data/*
+.env

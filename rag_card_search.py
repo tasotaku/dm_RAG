@@ -172,7 +172,7 @@ def generate_search_query_with_llm(question: str) -> str:
 """
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user}
@@ -183,7 +183,7 @@ def generate_search_query_with_llm(question: str) -> str:
 def summarize_prompt_for_filename(prompt: str) -> str:
     """質問文を簡潔なファイル名用タイトルに要約する（最大20文字）"""
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         messages=[
             {"role": "system", "content": "以下の質問をファイル名に使えるように10〜20文字で簡潔に表現してください。句読点やスペースはできるだけ使わず、わかりやすく要約してください。"},
             {"role": "user", "content": prompt}
@@ -246,7 +246,7 @@ def answer_question_with_rag(
 
     # 回答生成
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         messages=[
             {
                 "role": "system",
@@ -279,12 +279,18 @@ def generate_answer_from_context(
             f.write(prompt)
 
     # 回答生成
+    system_prompt = """
+    あなたはデュエル・マスターズのカードに詳しいアシスタントです。ユーザーの質問に、提示されたカードデータの中から答えてください。
+    デュエマのルール
+    ターン初めにカードを1枚引く。手札からマナを1枚チャージ。コスト数だけマナをタップしてカードを使用。基本、マナをアンタップできるのはターン開始時のみ。
+    つまり、何かマナを増やすカードとか軽減するカードを使わなければ、ターン数=マナの数=支払うことができる合計コスト。
+    """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         messages=[
             {
                 "role": "system",
-                "content": "あなたはデュエル・マスターズのカードに詳しいアシスタントです。ユーザーの質問に、提示されたカードデータの中から答えてください。"
+                "content": system_prompt
             },
             {"role": "user", "content": prompt}
         ]

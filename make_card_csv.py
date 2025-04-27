@@ -173,7 +173,7 @@ def merge_and_replace_cards(new_csv, existing_csv, output_csv=None, new_only_csv
     # デフォルトファイル名を生成（当日日付付き）
     if output_csv is None:
         today = datetime.today().strftime("%Y%m%d")
-        output_csv = f"duelmasters_cards_{today}.csv"
+        output_csv = f"card_data/duelmasters_cards_{today}.csv"
 
     df_existing = pd.read_csv(existing_csv)
     df_new = pd.read_csv(new_csv)
