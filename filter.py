@@ -90,20 +90,24 @@ def filter_by_civilization(df, include_civs=None, exclude_civs=None):
     return df[mask]
 
 def filter_by_cost(df, min_cost=None, max_cost=None):
-    mask = pd.Series([True] * len(df), index=df.index)
+    cost_mask = pd.Series([False] * len(df), index=df.index)
 
     for col in df.columns:
         if "コスト" in col:
             try:
                 col_values = pd.to_numeric(df[col], errors="coerce")
+                this_mask = pd.Series([True] * len(df), index=df.index)
+
                 if min_cost is not None:
-                    mask &= (col_values >= min_cost) | col_values.isna()
+                    this_mask &= (col_values >= min_cost)
                 if max_cost is not None:
-                    mask &= (col_values <= max_cost) | col_values.isna()
+                    this_mask &= (col_values <= max_cost)
+
+                cost_mask |= this_mask.fillna(False)
             except Exception:
                 continue
 
-    return df[mask]
+    return df[cost_mask]
 
 def filter_by_race_keyword(df, race_keywords=None):
     race_keywords = race_keywords or []
@@ -150,21 +154,14 @@ def parse_texts_to_dataframe(texts):
         rows.append(row)
     return pd.DataFrame(rows)
 
-def filter_index_and_texts(index, texts, df_filter_func):
-    df = parse_texts_to_dataframe(texts)
-    df_filtered = df_filter_func(df)
+def filter_index_with_dataframe(index, df, filter_func):
+    df_filtered = filter_func(df)
+    filtered_indices = df_filtered.index.tolist()
 
-    # フィルタ通過したインデックスを取得
-    valid_indices = df_filtered["index"].tolist()
-
-    # 対応するベクトルを抜き出して新しいindexを作る
-    vectors = index.reconstruct_n(0, index.ntotal)  # 全ベクトルを取り出す
-    filtered_vectors = np.array([vectors[i] for i in valid_indices]).astype("float32")
+    all_vectors = index.reconstruct_n(0, index.ntotal)
+    filtered_vectors = np.array([all_vectors[i] for i in filtered_indices]).astype("float32")
 
     new_index = faiss.IndexFlatL2(index.d)
     new_index.add(filtered_vectors)
 
-    # texts も絞り込む
-    new_texts = [texts[i] for i in valid_indices]
-
-    return new_index, new_texts
+    return new_index, df_filtered

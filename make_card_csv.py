@@ -169,47 +169,36 @@ def get_card_urls_from_pages(start_page=1, end_page=300, products=None) -> list[
     driver.quit()
     return all_card_urls
 
-def merge_and_replace_cards(new_csv, existing_csv, output_csv=None, new_only_csv="card_data/new_cards_only.csv"):
-    # デフォルトファイル名を生成（当日日付付き）
-    if output_csv is None:
+def make_new_cards_only(
+    new_csv_path,
+    existing_csv_path,
+    output_new_only_csv_path="card_data/new_cards_only.csv"
+):
+    df_new = pd.read_csv(new_csv_path)
+    df_existing = pd.read_csv(existing_csv_path)
+
+    # 既存のカード名に含まれていない行だけ抽出（＝新規カード）
+    df_new_only = df_new[~df_new["カード名_1"].isin(df_existing["カード名_1"])]
+
+    df_new_only.to_csv(output_new_only_csv_path, index=False, encoding="utf-8-sig")
+    
+def concat_new_and_existing_cards(
+    new_csv_path,
+    existing_csv_path,
+    output_csv_path=None
+):
+    df_existing = pd.read_csv(existing_csv_path)
+    df_new = pd.read_csv(new_csv_path)
+
+    # 列順を既存の順に合わせる
+    df_new = df_new.reindex(columns=df_existing.columns)
+
+    # 新カードを先頭に連結
+    df_combined = pd.concat([df_new, df_existing], ignore_index=True)
+
+    # 保存先のパスが空なら現在日付で自動命名
+    if not output_csv_path:
         today = datetime.today().strftime("%Y%m%d")
-        output_csv = f"card_data/duelmasters_cards_{today}.csv"
+        output_csv_path = f"card_data/duelmasters_cards_{today}.csv"
 
-    df_existing = pd.read_csv(existing_csv)
-    df_new = pd.read_csv(new_csv)
-
-    def extract_main_name(row):
-        for col in row.index:
-            if col.startswith("カード名") and pd.notna(row[col]):
-                return row[col]
-        return None
-
-    new_cards_dict = {}
-    for _, row in df_new.iterrows():
-        name = extract_main_name(row)
-        if name:
-            new_cards_dict[name] = row
-
-    updated_rows = []
-    existing_names = set()
-
-    for _, row in df_existing.iterrows():
-        name = extract_main_name(row)
-        if name in new_cards_dict:
-            updated_rows.append(new_cards_dict[name])  # 上書き
-            existing_names.add(name)
-            del new_cards_dict[name]
-        else:
-            updated_rows.append(row)
-
-    updated_rows.extend(new_cards_dict.values())
-
-    df_merged = pd.DataFrame(updated_rows)
-    df_merged = df_merged.reindex(columns=df_existing.columns)
-
-    df_merged.to_csv(output_csv, index=False, encoding="utf-8-sig")
-    pd.DataFrame(new_cards_dict.values()).to_csv(new_only_csv, index=False, encoding="utf-8-sig")
-
-    print(f"マージ完了（上書き含む）→ {output_csv}")
-    print(f"上書き件数: {len(existing_names)}")
-    print(f"新規追加件数: {len(new_cards_dict)} → {new_only_csv}")
+    df_combined.to_csv(output_csv_path, index=False, encoding="utf-8-sig")
