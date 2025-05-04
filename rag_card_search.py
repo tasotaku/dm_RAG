@@ -77,11 +77,14 @@ def search_similar_cards(
     results = []
     saved_lines = []
 
+    cnt = 0
     for dist, idx in zip(distances, indices):
         if dist <= max_distance_threshold:
             row = df.iloc[idx]
             results.append(row)
-            saved_lines.append(f"[{idx}] (距離: {dist:.4f})\n{row.to_string()}\n\n---\n")
+            formatted_row = "\n".join(f"{k}: {v}" for k, v in row.items())
+            saved_lines.append(f"[{idx}] (距離: {dist:.4f})\n{f"{cnt}枚目"}\n{formatted_row}\n\n---\n")
+            cnt += 1
 
     if save_path:
         with open(save_path, "w", encoding="utf-8") as f:
@@ -91,24 +94,6 @@ def search_similar_cards(
     return results  
 
 # === 回答生成（LLMに渡す） ===
-def generate_search_query_with_llm(question: str) -> str:
-    system = "あなたはデュエル・マスターズのカードに詳しい検索エンジンの設計者です。"
-    user = f"""以下はユーザーの質問です。
-質問: 「{question}」
-
-この質問から、デュエル・マスターズのカードを検索するためのキーワード（検索クエリ）を数語で抜き出してください。
-返答はキーワードのみを半角スペース区切りで出力してください。
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ]
-    )
-    return response.choices[0].message.content.strip()
-
 def summarize_prompt_for_filename(prompt: str) -> str:
     """質問文を簡潔なファイル名用タイトルに要約する（最大20文字）"""
     response = client.chat.completions.create(
@@ -138,27 +123,37 @@ def save_answer_text(prompt, answer, save_dir="answers"):
 
     print(f"回答を保存しました: {file_path}")
 
-def generate_answer_from_context(
+def create_card_prompt(
     user_question,
     context,
-    save_dir="answers",
     save_prompt_path="prompt.txt"
-):
+    ):
     # プロンプト作成
-    prompt = f"""以下はカード情報の抜粋です。\n{context}\n\n質問: {user_question}\n答え:"""
+    user_prompt = f"""以下はカード情報の抜粋です。\n{context}\n\n質問: {user_question}\n答え:"""
 
     # プロンプトを保存
     if save_prompt_path:
         with open(save_prompt_path, "w", encoding="utf-8") as f:
-            f.write(prompt)
+            f.write(user_prompt)
 
     # 回答生成
     system_prompt = """
-    あなたはデュエル・マスターズのカードに詳しいアシスタントです。ユーザーの質問に、提示されたカードデータの中から答えてください。
-    デュエマのルール
-    ターン初めにカードを1枚引く。手札からマナを1枚チャージ。コスト数だけマナをタップしてカードを使用。基本、マナをアンタップできるのはターン開始時のみ。
-    つまり、何かマナを増やすカードとか軽減するカードを使わなければ、ターン数=マナの数=支払うことができる合計コスト。
-    """
+あなたはデュエル・マスターズのカードに詳しいアシスタントです。ユーザーがほしいカードを、カードリストを提示するので、その中から該当するカードを答えてください。
+該当するか判断が難しいカードも含めて、全て、一枚残らず教えてください。
+該当するカードがあれば、そのカードの能力を原文のまま引用してください。
+デュエマのルール
+ターン初めにカードを1枚引く。手札からマナを1枚チャージ。コスト数だけマナをタップしてカードを使用。基本、マナをアンタップできるのはターン開始時のみ。
+つまり、何かマナを増やすカードとか軽減するカードを使わなければ、ターン数=支払うことができる合計コスト。
+"""
+    
+    return system_prompt, user_prompt
+
+def generate_answer_from_prompt(
+    system_prompt,
+    user_prompt,
+    save_dir="answers"
+    ):
+    # 回答生成
     response = client.chat.completions.create(
         model="gpt-4.1",
         messages=[
@@ -166,12 +161,12 @@ def generate_answer_from_context(
                 "role": "system",
                 "content": system_prompt
             },
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": user_prompt}
         ]
     )
     answer = response.choices[0].message.content
 
     # 回答を保存
-    save_answer_text(user_question, answer, save_dir)
+    save_answer_text(user_prompt, answer, save_dir)
 
     return answer
