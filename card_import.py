@@ -202,8 +202,10 @@ def parse_card(html: str) -> dict[str, str]:
         for table in block.select("table"):
             for th, td in zip(table.find_all("th"), table.find_all("td")):
                 card[f"{th.get_text(strip=True)}_{i}"] = td.get_text(" ", strip=True)
-        if f"カードの種類_{i}" not in card:
-            raise ValueError(f"公式詳細のカード種類がありません: {title_text}")
+        required = ("カードの種類", "文明", "コスト", "特殊能力")
+        missing = [label for label in required if f"{label}_{i}" not in card]
+        if missing:
+            raise ValueError(f"公式詳細の必須欄がありません: {title_text}: {', '.join(missing)}")
     return card
 
 

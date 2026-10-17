@@ -48,6 +48,7 @@ def detail(name="新カード"):
     return f'''<div class="card-itself"><h3 class="card-name">{name}<span class="packname">(PACK)</span></h3>
     <div class="grid small-12 medium-8 column"><table>
     <tr><th>カードの種類</th><td>クリーチャー</td></tr>
+    <tr><th>文明</th><td>水</td></tr><tr><th>コスト</th><td>3</td></tr>
     <tr><th>特殊能力</th><td>能力１<br>能力２</td></tr></table></div></div>'''
 
 
@@ -101,6 +102,12 @@ def test_detail_keeps_both_sides_and_excludes_pack_label():
 def test_incomplete_detail_stops():
     with pytest.raises(ValueError):
         parse_card('<div class="card-itself"><h3 class="card-name">名前だけ</h3></div>')
+
+
+def test_missing_ability_field_stops_but_empty_ability_is_valid():
+    with pytest.raises(ValueError, match="特殊能力"):
+        parse_card(detail().replace('<tr><th>特殊能力</th><td>能力１<br>能力２</td></tr>', ''))
+    assert parse_card(detail().replace('能力１<br>能力２', ''))['特殊能力_1'] == ''
 
 
 def response(html):
