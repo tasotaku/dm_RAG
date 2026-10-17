@@ -10,6 +10,7 @@ import requests
 from card_import import (
     HtmlClient, import_product, list_page, name_key, number_key,
     parse_card, plan_cards, product_urls, row_name, save_rows, wiki_cards,
+    wiki_deck_cards, wiki_source_numbers,
 )
 
 
@@ -57,9 +58,10 @@ def test_wiki_multiple_numbers_and_scope():
     assert cards == {"1": "登録済み", "PR1": "登録済み", "2": "新カード", "SEC1": "新カード", "CHOSEC1": "新カード"}
 
 
-def test_ambiguous_wiki_stops():
-    with pytest.raises(ValueError, match="複数"):
-        wiki_cards(WIKI.replace("（2/2）", "（1/2）"))
+def test_ambiguous_wiki_numbers_are_not_used_for_exclusion():
+    cards = wiki_cards(WIKI.replace("（2/2）", "（1/2）"))
+    assert '1' not in cards
+    assert cards['PR1'] == '登録済み'
 
 
 def test_missing_wiki_stops():
@@ -233,3 +235,49 @@ def test_new_csv_columns_are_preserved(tmp_path):
     with output.open(encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
     assert rows[1]["特殊能力_3"] == "三面目"
+
+
+def test_set_heading_keeps_same_level_new_and_reprint_subsections():
+    html = '<h3>収録セット</h3><h3>新規カード 全1種</h3><ul><li><a>《A》</a>（N1/N1）</li></ul><h3>再録カード 全1種</h3><ul><li><a>《B》</a>/<a>《C》</a>（1/1）</li></ul><h3>参考</h3><ul><li><a>《D》</a>（2/2）</li></ul>'
+    assert wiki_cards(html) == {'N1': 'A', '1': 'B/C'}
+
+
+def test_deck_roster_ignores_commentary_tables_and_uses_canonical_name():
+    html = '<h3>収録カード</h3><table><tr><td>■収録カード</td><td>枚数</td></tr><tr><td><a href="/A" title="《A／B》">《A》</a></td><td>4</td></tr></table><table><tr><td>解説</td></tr><tr><td><a>《紹介だけ》</a></td></tr></table><h3>参考</h3>'
+    assert wiki_cards(html) == {}
+    assert wiki_deck_cards(html) == {'A／B': 'https://dmwiki.net/A'}
+
+
+def test_source_numbers_only_use_exact_pack_inside_source_section():
+    html = '<h3>収録セット</h3><ul><li><a href="/DM25-BD3">DM25-BD3</a>（12/20）（㊙1/㊙8）</li><li><a href="/DM25-BD2">DM25-BD2</a>（3/20）</li></ul><h3>参考</h3>'
+    assert wiki_source_numbers(html, 'DM25-BD3') == ['12', 'SEC1']
+
+
+def test_source_numbers_do_not_read_ancestor_illustrator_sibling_packs():
+    html = '<h3>収録セット</h3><ul><li>illus.Artist<ul><li><a href="/DM25-BD3">target</a>（12/20）</li><li><a href="/DM24-RP1">other</a>（1/77）</li></ul></li></ul><h3>参考</h3>'
+    assert wiki_source_numbers(html, 'DM25-BD3') == ['12']
+
+
+def test_numbered_roster_ignores_ancestor_li_and_keeps_interleaved_face_numbers():
+    html = '<h3>収録カード</h3><ul><li>元パックと同じ<ul><li><a>《A》</a>（1/2）</li><li><a>《B》</a>（2/2）</li></ul></li><li><a>《C》</a>（3a/3）/<a>《D》</a>（3b/3）</li></ul><h3>参考</h3>'
+    assert wiki_cards(html) == {'1': 'A', '2': 'B', '3A': 'C/D', '3B': 'C/D'}
+
+
+def test_deck_prefilter_requires_roster_count_and_every_missing_name(tmp_path):
+    existing, output = tmp_path / 'existing.csv', tmp_path / 'new.csv'
+    save_rows(existing, [{'カード名_1': '登録済み'}])
+    roster = '<h3>収録カード</h3><table><tr><td>収録カード</td><td>枚数</td></tr><tr><td><a href="/known">《登録済み》</a></td><td>4</td></tr><tr><td><a href="/new">《新カード》</a></td><td>4</td></tr></table><h3>参考</h3>'
+    client = fake_client()
+    def html(url, data=None, **kw):
+        if url.endswith('/DM25-RP1'):
+            return roster
+        if url.endswith('/new'):
+            return '<h3>収録セット</h3><ul><li><a href="/DM25-RP1">pack</a>（2/2）</li></ul><h3>参考</h3>'
+        if data:
+            return listing(['001', '002'])
+        raise AssertionError('plan must not fetch details or registered Wiki card')
+    client.html.side_effect = html
+    report = import_product('25rp1', existing, output, client)
+    assert report['wiki_roster_complete']
+    assert report['candidate_details_max'] == 1
+    assert report['skipped_registered'] == 1

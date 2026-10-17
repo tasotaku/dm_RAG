@@ -12,7 +12,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -77,34 +77,95 @@ def number_key(number: str) -> str:
     return re.sub(r"\d+", lambda m: str(int(m.group())), number)
 
 
-def wiki_cards(html: str) -> dict[str, str]:
-    # AI_NOTE: 本文中の紹介カードを混ぜず、収録カードの節だけを読む。
+def wiki_sections(html: str) -> list[Tag]:
+    # AI_NOTE: 収録セット内の新規・再録の小見出しを許し、紹介文や参考資料を含めない。
     soup = BeautifulSoup(html, "html.parser")
     heading = next((tag for tag in soup.find_all(["h2", "h3", "h4"])
-                    if tag.get_text(strip=True).startswith("収録カード")), None)
+                    if tag.get_text(strip=True).startswith(("収録カード", "収録セット"))), None)
     if heading is None:
         raise ValueError("Wikiの収録カード欄が見つかりません。取得を中止します")
-    cards: dict[str, str] = {}
+    sections = []
     level = int(heading.name[1])
     for sibling in heading.next_siblings:
         if not isinstance(sibling, Tag):
             continue
-        if re.fullmatch(r"h[1-6]", sibling.name) and int(sibling.name[1]) <= level:
-            break
+        if re.fullmatch(r"h[1-6]", sibling.name):
+            text = sibling.get_text(strip=True)
+            if text.startswith(("参考", "関連", "その他")) or int(sibling.name[1]) < level:
+                break
+            if int(sibling.name[1]) == level and not text.startswith(("新規カード", "再録カード")):
+                break
+        sections.append(sibling)
+    return sections
+
+
+def wiki_link_name(link: Tag) -> str:
+    # AI_NOTE: 表示が片面の省略名でも、リンク先の正式な両面名を優先する。
+    title = str(link.get("title", ""))
+    return (title if title.startswith("《") else link.get_text(strip=True)).strip("《》")
+
+
+def wiki_cards(html: str) -> dict[str, str]:
+    # AI_NOTE: 同じ行の複数番号と複数面のカード名を保持する。
+    cards: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for sibling in wiki_sections(html):
         for item in sibling.find_all("li"):
-            links = [a for a in item.find_all("a") if a.get_text(strip=True).startswith("《")]
-            if len(links) != 1:
+            links = [a for a in item.find_all("a") if a.find_parent("li") is item
+                     and a.get_text(strip=True).startswith("《")]
+            if not links:
                 continue
-            name = links[0].get_text(strip=True).strip("《》")
-            tail = item.get_text(" ", strip=True).split("》", 1)[-1]
+            name = "/".join(dict.fromkeys(wiki_link_name(link) for link in links))
+            tail = " ".join(str(text) for text in item.find_all(string=True)
+                            if text.find_parent("li") is item and text.find_parent("a") not in links)
             for number in re.findall(r"[（(]([^()（）\s/]+)\s*/[^()（）]+[）)]", tail):
                 key = number_key(number)
+                if key in ambiguous:
+                    continue
                 if key in cards and name_key(cards[key]) != name_key(name):
-                    raise ValueError(f"Wikiで収録番号が複数のカード名に対応しています: {number}")
+                    # 元パックの型番を維持した再録など、番号だけでは区別できない行は除外判定に使わない。
+                    del cards[key]
+                    ambiguous.add(key)
+                    continue
                 cards[key] = name
-    if not cards:
+    if not cards and not wiki_deck_cards(html):
         raise ValueError("Wikiの収録番号を解釈できません。取得を中止します")
     return cards
+
+
+def wiki_deck_cards(html: str) -> dict[str, str]:
+    # AI_NOTE: 解説中の表ではなく、収録カード・枚数という見出しを持つ表だけを読む。
+    cards = {}
+    for section in wiki_sections(html):
+        tables = ([section] if section.name == "table" else []) + list(section.find_all("table"))
+        for table in tables:
+            first = table.find("tr")
+            if table.find("table") or first is None:
+                continue
+            if not all(word in first.get_text() for word in ("収録カード", "枚数")):
+                continue
+            for row in table.find_all("tr"):
+                links = [a for a in row.find_all("a") if a.get_text(strip=True).startswith("《")]
+                if links:
+                    name = "/".join(dict.fromkeys(wiki_link_name(link) for link in links))
+                    cards[name] = urljoin("https://dmwiki.net", str(links[0].get("href", "")))
+    return cards
+
+
+def wiki_source_numbers(html: str, wiki_page: str) -> list[str]:
+    # AI_NOTE: デッキで番号が省略されている場合は、未登録カードのWikiだけで番号を補う。
+    numbers: list[str] = []
+    for section in wiki_sections(html):
+        for link in section.find_all("a"):
+            if unquote(urlparse(str(link.get("href", ""))).path).lstrip("/") != wiki_page:
+                continue
+            item = link.find_parent("li")
+            if item is None:
+                continue
+            local_text = " ".join(str(text) for text in item.find_all(string=True)
+                                  if text.find_parent("li") is item)
+            numbers.extend(number_key(n) for n in re.findall(r"[（(]([^()（）\s/]+)\s*/[^()（）]+[）)]", local_text))
+    return list(dict.fromkeys(numbers))
 
 
 def list_page(client: HtmlClient, page: int, product: str | None, *, refresh: bool = False) -> tuple[list[str], bool]:
@@ -243,12 +304,34 @@ def import_product(product: str, existing: Path, output: Path, client: HtmlClien
             raise ValueError("Wikiページ名を--wiki-pageで指定してください")
     if not re.fullmatch(r"[A-Za-z0-9-]+", wiki_page):
         raise ValueError("Wikiページ名はDM25-RP1などのパックコードを指定してください")
-    wiki = wiki_cards(client.html(f"https://dmwiki.net/{wiki_page}", refresh=refresh_lists))
+    wiki_html = client.html(f"https://dmwiki.net/{wiki_page}", refresh=refresh_lists)
+    wiki = wiki_cards(wiki_html)
+    deck = wiki_deck_cards(wiki_html)
+    unresolved_names = []
+    for name, url in deck.items():
+        if name_key(name) in known or any(name_key(value) == name_key(name) for value in wiki.values()):
+            continue
+        numbers = wiki_source_numbers(client.html(url), wiki_page)
+        if not numbers:
+            unresolved_names.append(name)
+        for key in numbers:
+            if key in wiki and name_key(wiki[key]) != name_key(name):
+                raise ValueError(f"Wikiのカード別収録番号が競合しています: {name}")
+            wiki[key] = name
     urls = product_urls(client, product, refresh=refresh_lists)
     candidates, skipped = plan_cards(urls, wiki, known)
+    roster_names = {name_key(name) for name in list(deck) + list(wiki.values())}
+    mapped_names = {name_key(card.name) for card in candidates if card.name is not None}
+    missing_roster_names = roster_names - known
+    roster_complete = bool(deck) and len(roster_names) == len(urls) and missing_roster_names <= mapped_names
+    if roster_complete:
+        # AI_NOTE: Wikiの名簿と公式の種類数が一致し、未登録名をすべてURL対応できた時だけ既存の番号なし行を除外する。
+        candidates = [card for card in candidates if card.name is not None]
+        skipped = len(urls) - len(candidates)
     report: dict[str, Any] = {
         "product": product, "mode": "fetch" if fetch else "plan", "official_list_cards": len(urls),
         "wiki_numbers": len(wiki), "skipped_registered": skipped,
+        "wiki_roster_complete": roster_complete, "unresolved_wiki_names": unresolved_names,
         "candidates": [asdict(card) for card in candidates],
         "candidate_details_max": len(candidates),
         "unmatched_numbers": sum(card.name is None for card in candidates),
