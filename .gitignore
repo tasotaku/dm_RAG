@@ -3,3 +3,5 @@ __pycache__/
 answers/*
 card_data/*
 .env
+.card_cache/
+tests/temp/
