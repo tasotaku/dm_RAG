@@ -118,8 +118,20 @@ def wiki_cards(html: str) -> dict[str, str]:
             name = "/".join(dict.fromkeys(wiki_link_name(link) for link in links))
             tail = " ".join(str(text) for text in item.find_all(string=True)
                             if text.find_parent("li") is item and text.find_parent("a") not in links)
+            prefix = ""
+            for parent in item.find_parents("li"):
+                own_text = " ".join(str(text) for text in parent.find_all(string=True)
+                                    if text.find_parent("li") is parent)
+                if "型番が同一" not in own_text:
+                    continue
+                packs = [unquote(urlparse(str(a.get("href", ""))).path).lstrip("/")
+                         for a in parent.find_all("a") if a.find_parent("li") is parent]
+                if len(packs) == 1 and re.fullmatch(r"DM\d{2}-[A-Za-z]+\d+", packs[0]):
+                    # 元パック型番を維持した再録は、公式一覧のrp1S01等と照合する。
+                    prefix = packs[0].split("-", 1)[1]
+                break
             for number in re.findall(r"[（(]([^()（）\s/]+)\s*/[^()（）]+[）)]", tail):
-                key = number_key(number)
+                key = number_key(prefix + number)
                 if key in ambiguous:
                     continue
                 if key in cards and name_key(cards[key]) != name_key(name):
@@ -319,6 +331,31 @@ def import_product(product: str, existing: Path, output: Path, client: HtmlClien
                 raise ValueError(f"Wikiのカード別収録番号が競合しています: {name}")
             wiki[key] = name
     urls = product_urls(client, product, refresh=refresh_lists)
+    source_soup = BeautifulSoup(wiki_html, "html.parser")
+    source_text = source_soup.get_text()
+    if "元セットと同じ型番" in source_text or "型番が同一" in source_text:
+        # AI_NOTE: 全種再録で名前が省略されたWiki欄は、一覧IDが明示する元パックのWikiで補う。
+        originals = set()
+        suffixes = [parse_qs(urlparse(url).query)["id"][0].split("-", 1)[1].upper() for url in urls]
+        for link in source_soup.find_all("a"):
+            path = unquote(urlparse(str(link.get("href", ""))).path).lstrip("/")
+            match = re.fullmatch(rf"DM{product[:2]}-(RP\d+)", path, re.IGNORECASE)
+            if match and any(suffix.startswith(match[1].upper()) for suffix in suffixes):
+                originals.add(match[1].upper())
+        for original in sorted(originals):
+            source_page = f"DM{product[:2]}-{original}"
+            source = wiki_cards(client.html(f"https://dmwiki.net/{source_page}", refresh=refresh_lists))
+            for suffix in suffixes:
+                if not suffix.startswith(original):
+                    continue
+                key = number_key(suffix[len(original):])
+                if key not in source:
+                    continue
+                name = source[key]
+                joined = number_key(suffix)
+                if joined in wiki and name_key(wiki[joined]) != name_key(name):
+                    raise ValueError(f"元パックのWikiと収録番号が一致しません: {source_page}: {key}")
+                wiki[joined] = name
     candidates, skipped = plan_cards(urls, wiki, known)
     roster_names = {name_key(name) for name in list(deck) + list(wiki.values())}
     mapped_names = {name_key(card.name) for card in candidates if card.name is not None}

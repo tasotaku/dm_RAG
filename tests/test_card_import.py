@@ -263,6 +263,30 @@ def test_numbered_roster_ignores_ancestor_li_and_keeps_interleaved_face_numbers(
     assert wiki_cards(html) == {'1': 'A', '2': 'B', '3A': 'C/D', '3B': 'C/D'}
 
 
+def test_reprint_numbers_with_original_pack_prefix():
+    html = '<h3>収録カード</h3><ul><li><a href="/DM25-RP1">pack1</a>と型番が同一のもの<ul><li><a>《A》</a>（S1/S11）</li></ul></li><li><a href="/DM25-RP2">pack2</a>と型番が同一のもの<ul><li><a>《B》</a>（S1/S11）</li></ul></li></ul><h3>参考</h3>'
+    assert wiki_cards(html) == {'RP1S1': 'A', 'RP2S1': 'B'}
+
+
+def test_original_pack_wiki_fills_omitted_reprint_roster(tmp_path):
+    existing, output = tmp_path / 'existing.csv', tmp_path / 'new.csv'
+    save_rows(existing, [{'カード名_1': '登録済み'}])
+    client = fake_client()
+    def html(url, data=None, **kw):
+        if url.endswith('/DM25-EX3'):
+            return '<h3>収録セット</h3><p><a href="/DM25-RP1">元セット</a>と同じ型番を全種収録。</p><ul><li><a>《新カード》</a>（1/1）</li></ul><h3>参考</h3>'
+        if url.endswith('/DM25-RP1'):
+            return '<h3>収録カード</h3><ul><li><a>《登録済み》</a>（S1/S11）</li><li><a>《登録済み》</a>（1/77）</li></ul><h3>参考</h3>'
+        if data:
+            return listing(['rp1S01', 'rp1001', '001']).replace('dm25rp1-', 'dm25ex3-')
+        raise AssertionError('plan must not fetch details')
+    client.html.side_effect = html
+    report = import_product('25ex3', existing, output, client)
+    assert report['skipped_registered'] == 2
+    assert report['candidate_details_max'] == 1
+    assert report['unmatched_numbers'] == 0
+
+
 def test_deck_prefilter_requires_roster_count_and_every_missing_name(tmp_path):
     existing, output = tmp_path / 'existing.csv', tmp_path / 'new.csv'
     save_rows(existing, [{'カード名_1': '登録済み'}])
