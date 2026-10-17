@@ -11,6 +11,7 @@ from card_import import (
     HtmlClient, import_product, list_page, name_key, number_key,
     parse_card, plan_cards, product_urls, row_name, save_rows, wiki_cards,
     wiki_deck_cards, wiki_source_numbers,
+    Candidate, verify_search_results,
 )
 
 
@@ -29,6 +30,9 @@ def test_names_and_twinpact():
     assert row_name({"カード名_1": "A/B", "カード名_2": "A/B"}) == name_key("A/B")
     assert row_name({"カード名_1": "A", "カード名_2": "B"}) == name_key("A/B")
     assert name_key("A/B") != name_key("A")
+    assert name_key('旅路〜J〜') == name_key('旅路～J～')
+    assert name_key('切札勝太&カツキング ー熱血の物語ー') == name_key('切札勝太＆カツキング -熱血の物語-')
+    assert name_key('コーライル') != name_key('コ-ライル')
 
 
 WIKI = """<h3>紹介</h3><ul><li><a>《紹介だけ》</a>（3/3）</li></ul>
@@ -285,6 +289,75 @@ def test_original_pack_wiki_fills_omitted_reprint_roster(tmp_path):
     assert report['skipped_registered'] == 2
     assert report['candidate_details_max'] == 1
     assert report['unmatched_numbers'] == 0
+
+
+def test_deck_name_search_avoids_all_details_when_card_wiki_has_no_number(tmp_path):
+    existing, output = tmp_path / 'existing.csv', tmp_path / 'new.csv'
+    save_rows(existing, [{'カード名_1': '登録済み'}])
+    roster = '<h3>収録カード</h3><table><tr><td>収録カード</td><td>枚数</td></tr><tr><td><a href="/known">《登録済み》</a></td><td>4</td></tr><tr><td><a href="/new">《新カード》</a></td><td>4</td></tr></table><h3>参考</h3>'
+    client = fake_client()
+    def html(url, data=None, **kw):
+        if url.endswith('/DM25-RP1'):
+            return roster
+        if url.endswith('/new'):
+            return '<h3>収録セット</h3><ul><li><a href="/DM24-RP1">other</a>（3/77）</li></ul><h3>参考</h3>'
+        if data:
+            if data.get('keyword'):
+                assert data['keyword_type[]'] == 'card_name'
+                return listing(['002'])
+            return listing(['001', '002'])
+        if '/detail/' in url:
+            return detail('新カード' if url.endswith('002') else '登録済み')
+        raise AssertionError('plan must not fetch details')
+    client.html.side_effect = html
+    report = import_product('25rp1', existing, output, client)
+    assert not report['wiki_roster_complete']
+    assert report['candidate_details_max'] == 2
+    report = import_product('25rp1', existing, output, client, fetch=True)
+    assert report['wiki_roster_complete']
+    assert report['added'] == 1
+
+
+def test_empty_keyword_search_is_not_end_of_regular_pack():
+    client = fake_client()
+    client.html.side_effect = None
+    client.html.return_value = '<div>0件</div>'
+    assert product_urls(client, '25rp1', keyword='見つからない') == []
+    with pytest.raises(ValueError):
+        product_urls(client, '25rp1')
+
+
+def test_nonempty_wrong_name_search_cannot_drop_missing_card():
+    client = fake_client()
+    client.html.side_effect = None
+    client.html.return_value = detail('共通 旧カード')
+    urls = ['https://dm.takaratomy.co.jp/card/detail/?id=dm25rp1-001',
+            'https://dm.takaratomy.co.jp/card/detail/?id=dm25rp1-002']
+    candidates = [Candidate(url, None) for url in urls]
+    report = {'name_search_urls':[urls[0]], 'wiki_roster_complete':False,
+              'missing_roster_names':[name_key('共通 新カード')], 'mapped_roster_names':[]}
+    assert verify_search_results(candidates, client, report) == candidates
+    assert report['name_search_verified'] is False
+
+
+def test_one_hit_cannot_resolve_multiple_missing_names():
+    client = fake_client()
+    client.html.side_effect = None
+    client.html.return_value = detail('共通 A')
+    candidates = [Candidate('https://example.com/1',None),Candidate('https://example.com/2',None)]
+    report = {'name_search_urls':['https://example.com/1'], 'wiki_roster_complete':False,
+              'missing_roster_names':[name_key('共通 A'),name_key('共通 B')], 'mapped_roster_names':[]}
+    assert verify_search_results(candidates, client, report) == candidates
+
+
+def test_limit_disables_search_detail_prefetch(tmp_path):
+    existing, output = tmp_path / 'existing.csv', tmp_path / 'new.csv'
+    save_rows(existing, [{'カード名_1':'登録済み'}])
+    client = fake_client()
+    with patch('card_import.verify_search_results', side_effect=AssertionError('no preflight with limit')):
+        report = import_product('25rp1',existing,output,client,fetch=True,limit=1)
+    assert report['added'] == 1
+    assert len([x for x in client.html.call_args_list if '/detail/' in x.args[0]]) == 1
 
 
 def test_deck_prefilter_requires_roster_count_and_every_missing_name(tmp_path):

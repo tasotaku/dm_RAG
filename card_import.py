@@ -65,7 +65,11 @@ class HtmlClient:
 def name_key(name: str) -> str:
     # AI_NOTE: Wikiと公式の引用符・全半角・空白差を吸収し、ツインパクトは両面名で比較する。
     name = unicodedata.normalize("NFKC", name).translate(str.maketrans("’‘“”", "''\"\""))
-    return re.sub(r"\s+", "", name).strip("《》")
+    key = re.sub(r"\s+", "", name.replace("〜", "~")).strip("《》")
+    # 公式とWikiで異なる表記が実際の同一カードで確認できたものだけを補正する。
+    if key == "切札勝太&カツキングー熱血の物語ー":
+        return "切札勝太&カツキング-熱血の物語-"
+    return key
 
 
 def number_key(number: str) -> str:
@@ -180,14 +184,19 @@ def wiki_source_numbers(html: str, wiki_page: str) -> list[str]:
     return list(dict.fromkeys(numbers))
 
 
-def list_page(client: HtmlClient, page: int, product: str | None, *, refresh: bool = False) -> tuple[list[str], bool]:
+def list_page(client: HtmlClient, page: int, product: str | None, *, refresh: bool = False,
+              keyword: str | None = None) -> tuple[list[str], bool]:
     # AI_NOTE: ?v=の画面用URLではなく、公式の検索フォームと同じPOSTでHTMLだけを取得する。
     data = {"pagenum": str(page), "sort": "release_new"}
     if product:
         data["products"] = product
+    if keyword:
+        data.update(keyword=keyword, **{"keyword_type[]": "card_name"})
     soup = BeautifulSoup(client.html(LIST_URL, data, refresh=refresh), "html.parser")
     urls = list(dict.fromkeys(urljoin(OFFICIAL, str(img["data-href"]))
                              for img in soup.select(".cardImage[data-href]")))
+    if not urls and keyword:
+        return [], False
     if not urls:
         raise ValueError(f"カード一覧が空です（ページ{page}）。条件・サイト構造を確認してください")
     for url in urls:
@@ -202,11 +211,14 @@ def list_page(client: HtmlClient, page: int, product: str | None, *, refresh: bo
     return urls, has_next
 
 
-def product_urls(client: HtmlClient, product: str, *, refresh: bool = False) -> list[str]:
+def product_urls(client: HtmlClient, product: str, *, refresh: bool = False,
+                 keyword: str | None = None) -> list[str]:
     # AI_NOTE: 全パックの探索や既存カードが現れた時点での打ち切りは行わない。
     urls: list[str] = []
     for page in range(1, 1001):
-        found, has_next = list_page(client, page, product, refresh=refresh)
+        found, has_next = list_page(client, page, product, refresh=refresh, keyword=keyword)
+        if not found and keyword:
+            return urls
         if set(found).issubset(urls):
             raise ValueError("同じ一覧ページが繰り返されています。取得を中止します")
         urls.extend(url for url in found if url not in urls)
@@ -294,6 +306,29 @@ def save_rows(path: Path, rows: list[dict[str, str]]) -> None:
     temporary.replace(path)
 
 
+def verify_search_results(candidates: list[Candidate], client: HtmlClient,
+                          report: dict[str, Any]) -> list[Candidate]:
+    # AI_NOTE: 検索がヒットしただけでは除外せず、実際の詳細名で未登録名を網羅できた時だけ絞る。
+    search_urls = set(report.get("name_search_urls", []))
+    if not search_urls or report.get("wiki_roster_complete"):
+        return candidates
+    observed = {row_name(parse_card(client.html(url))) for url in sorted(search_urls)}
+    missing = set(report["missing_roster_names"]) - set(report["mapped_roster_names"]) - observed
+    report["name_search_verified"] = not missing
+    report["name_search_observed"] = sorted(observed)
+    report["unresolved_wiki_names"] = [name for name in report.get("unresolved_wiki_names", [])
+                                       if name_key(name) not in observed]
+    if missing:
+        return candidates
+    candidates = [card for card in candidates if card.name is not None or card.url in search_urls]
+    report["wiki_roster_complete"] = True
+    report["candidate_details_max"] = len(candidates)
+    report["skipped_registered"] = report["official_list_cards"] - len(candidates)
+    report["candidates"] = [asdict(card) for card in candidates]
+    report["unmatched_numbers"] = sum(card.name is None for card in candidates)
+    return candidates
+
+
 def import_product(product: str, existing: Path, output: Path, client: HtmlClient, *,
                    fetch: bool = False, refresh_lists: bool = False, limit: int | None = None,
                    wiki_page: str | None = None) -> dict[str, Any]:
@@ -360,21 +395,40 @@ def import_product(product: str, existing: Path, output: Path, client: HtmlClien
     roster_names = {name_key(name) for name in list(deck) + list(wiki.values())}
     mapped_names = {name_key(card.name) for card in candidates if card.name is not None}
     missing_roster_names = roster_names - known
+    searched_names: set[str] = set()
+    searched_urls: set[str] = set()
+    if deck and len(roster_names) == len(urls):
+        # AI_NOTE: カード別Wikiにも番号がない時は、未登録名の先頭語でパック内を検索し、全件の詳細取得を避ける。
+        terms: dict[str, list[str]] = {}
+        for name in deck:
+            if name_key(name) in missing_roster_names - mapped_names:
+                term = re.split(r"[\s/／＆&]", name, maxsplit=1)[0][:8]
+                terms.setdefault(term, []).append(name_key(name))
+        for term, names in terms.items():
+            found = product_urls(client, product, refresh=refresh_lists, keyword=term)
+            if found and set(found) <= set(urls):
+                searched_names.update(names)
+                searched_urls.update(found)
     roster_complete = bool(deck) and len(roster_names) == len(urls) and missing_roster_names <= mapped_names
     if roster_complete:
         # AI_NOTE: Wikiの名簿と公式の種類数が一致し、未登録名をすべてURL対応できた時だけ既存の番号なし行を除外する。
-        candidates = [card for card in candidates if card.name is not None]
+        candidates = [card for card in candidates if card.name is not None or card.url in searched_urls]
         skipped = len(urls) - len(candidates)
     report: dict[str, Any] = {
         "product": product, "mode": "fetch" if fetch else "plan", "official_list_cards": len(urls),
         "wiki_numbers": len(wiki), "skipped_registered": skipped,
-        "wiki_roster_complete": roster_complete, "unresolved_wiki_names": unresolved_names,
+        "wiki_roster_complete": roster_complete,
+        "unresolved_wiki_names": unresolved_names,
+        "name_search_urls": sorted(searched_urls),
+        "missing_roster_names": sorted(missing_roster_names), "mapped_roster_names": sorted(mapped_names),
         "candidates": [asdict(card) for card in candidates],
         "candidate_details_max": len(candidates),
         "unmatched_numbers": sum(card.name is None for card in candidates),
         "added": 0, "skipped_after_detail": 0, "skipped_same_name": 0,
     }
     if fetch:
+        if limit is None:
+            candidates = verify_search_results(candidates, client, report)
         detail_count = 0
         for candidate in candidates:
             if candidate.name is not None and name_key(candidate.name) in known:
